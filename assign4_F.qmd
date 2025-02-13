@@ -1,0 +1,570 @@
+:::{.callout-note}
+:::
+
+# Data description
+
+Our dataset contains text data about reviews from the Internet Movie Database (IMDB). Specifically, it consists of 5000 movie reviews (selected for sentiment analysis). No single movie has more than 30 reviews and the sentiment of the reviews is given as a binary variable, i.e. an IMDB rating < 5 results in a sentiment score of 0, and a rating >=7 results in a sentiment score of 1.
+
+```{r}
+#| label: R packages
+#| echo: false
+#| warning: false
+#| message: false
+
+library(text2vec)
+library(tidyverse)
+library(tidytext)  # for text mining
+library(tm)        # needed for wordcloud
+library(wordcloud) # to create pretty word clouds
+library(SnowballC) # for Porter's stemming algorithm
+library(ggplot2)
+library(cluster)   # for the silhouette score
+library(clusterSim) # for the DB-index
+library(mclust) # for the adjustedRand index
+library(aricode) # for the adjustedRand index
+library(magrittr)
+library(NLP)         
+library(RColorBrewer)
+library(umap)
+library(mclust)
+library(lda)
+library(topicmodels)
+
+```
+
+```{r}
+#| label: data loading
+
+data("movie_review")
+
+```
+
+```{r}
+#| label: eda visualization
+#| warning: false
+
+# Plotting the word-cloud plot with the 50 most frequent words with a minimum frequency of 5
+word_cloud <- wordcloud(
+  words = movie_review$review,
+  min.freq = 5,
+  max.words = 50,
+  random.order = FALSE,
+  colors = brewer.pal(8, "Dark2")
+)
+
+print(word_cloud)
+
+positive_negative_barplot <- ggplot(movie_review, aes(x = factor(sentiment))) +
+  geom_bar(fill = c("red", "green")) +
+  labs(title = "Sentiment Distribution of Movie Reviews", x = "Sentiment", y = "Count") +
+  scale_x_discrete(labels = c("0" = "Negative", "1" = "Positive")) +
+  theme_minimal()
+print(positive_negative_barplot)
+
+```
+From the word cloud graph, we can see that the most common words with font size correspond to word frequency.
+As for the barplot of positive-negative reviews, we can conclude that the number of positive reviews is almost the same as the number of negative reviews in our movie_review dataset.
+
+# Text pre-processing
+
+In our case, after loading the dataset, we used a series of text pre-processing steps to clean and standardize the data in preparation for analysis. First, we created a corpus object, which allows us to apply text pre-processing functions to the entire set of movie reviews. We then made the text uniform by converting it all to lowercase, ensuring that all words are treated the same. Next, we removed punctuation to eliminate all punctuation marks from the text and reduce noise. We also removed stopwords—both standard English stopwords like "and" and "the" that contribute little to the context, and custom stopwords specific to our dataset, such as "film," "movie," and "watch," which are too common or irrelevant for our analysis. Finally, we removed any extra whitespace to create cleaner and more readable text. These pre-processing steps help prepare the data for more effective analysis by focusing on the most meaningful terms in the reviews.
+
+
+```{r}
+#| label: Pre-processing steps
+
+# Create a Corpus from the review text
+corpus <- Corpus(VectorSource(movie_review$review))
+
+# Custom stop words
+custom_stopwords <- c("film", "movie", "watch")
+all_stopwords <- c(stopwords("en"), custom_stopwords)
+
+# Preprocess the Corpus
+corpus <- tm_map(corpus, content_transformer(tolower)) # Lowercasing
+corpus <- tm_map(corpus, removePunctuation) # Punctuation removal
+corpus <- tm_map(corpus, removeNumbers) # Number removal
+corpus <- tm_map(corpus, removeWords, all_stopwords) # Stopword removal
+corpus <- tm_map(corpus, stripWhitespace) # Remove extra whitespace
+
+```
+
+# Text representation
+
+A Document-Term Matrix (DTM) is created to organize the text data by showing how often each word appears in each document, making it easier to analyze. Only words with at least three characters are included, filtering out very short, less meaningful words. Additionally, words that appear in fewer than 5% of the documents are removed, focusing on more common and relevant terms. The DTM is then converted into a matrix and standardized so that each word has a similar impact in the analysis. This structured matrix highlights the most frequent words, making it useful for uncovering patterns or insights in the text data.
+
+```{r}
+#| label: DTM
+# Create a Document-Term Matrix (DTM) with frequent terms only
+dtm <- DocumentTermMatrix(corpus, control = list(word_length = c(3, Inf))) # Min length 3
+dtm <- removeSparseTerms(dtm, 0.95)  # Retain terms present in at least 5% of documents
+dtm_matrix <- as.matrix(dtm)
+
+# Scale the DTM matrix to standardize data
+dtm_matrix <- scale(dtm_matrix)
+
+inspect(dtm)
+
+
+```
+
+
+
+# Text clustering
+
+In order to analyze the movie review dataset, we used several text representation methods, such as k-Means, k-Medians, GMM, Hierarchical Clustering and Latent Dirichlet Allocation (LDA). The evaluation of clustering was performed using silhouette scores, which measure how similar each document is to its assigned cluster compared to other clusters as well as the Davies-Bouldin Index for internal validation. 
+
+First, we apply K-means algorithm to our dataset, which randomly assigns data points to K clusters and then it calculates the centroids for each cluster. Finally, it assigns each data point to the cluster belonging to its nearest centroid. If the assignments change, it recalculates the centroids based on the newly formed clusters.
+
+```{r}
+#| label: K-Means Method
+# Create a Document-Term Matrix with only the most frequent terms
+dtm <- DocumentTermMatrix(corpus, control = list(word_length = c(3, Inf)))  # Minimum word length of                                                                               3
+
+# Apply tf-idf transformation
+dtm_tfidf <- weightTfIdf(dtm)
+inspect(dtm_tfidf)
+
+# Remove the sparse terms
+dtm_tfidf <- removeSparseTerms(dtm_tfidf, 0.95) # Keep terms that appear in at least 5% of the                                                         documents
+dtm_tfidf_m <- as.matrix(dtm_tfidf)
+
+
+set.seed(40) # for reproducibility
+### K-Means Clustering with K=5 ###
+###################################
+K5 <- 5 # number of clusters
+
+# Sample a subset of the data (e.g., 1000 documents)
+#sample_indices <- sample(1:nrow(review_DTM_scaled), 1000)
+#review_DTM_sample <- review_DTM[sample_indices,]
+
+# Run K-means on the sample
+kmeans_result_5 <- kmeans(dtm_tfidf_m, centers = K5, nstart = 25)
+
+# Add the cluster assignment to the original data
+movie_review$Cluster5 <- kmeans_result_5$cluster
+
+# Bar plot showing the number of reviews in each cluster
+barplot_kmeans5 <- ggplot(movie_review, aes(x = factor(Cluster5), fill = factor(sentiment))) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), 
+                    labels = c("Negative", "Positive")) +  # Adjust the labels based on your binary                                                               encoding
+  labs(title = "Distribution of Sentiments Across the 5 Clusters",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+
+print(barplot_kmeans5)
+
+### K-Means Clustering with K=10 ###
+###################################
+K10 <- 10 # number of clusters
+
+# Run K-means on the sample
+kmeans_result_10 <- kmeans(dtm_tfidf_m, centers = K10, nstart = 25)
+
+# Add the cluster assignment to the original data
+movie_review$Cluster10 <- kmeans_result_10$cluster
+
+# Bar plot showing the number of reviews in each cluster
+barplot_kmeans10 <- ggplot(movie_review, aes(x = factor(Cluster10), fill = factor(sentiment))) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), 
+                    labels = c("Negative", "Positive")) +  # Adjust the labels based on your binary                                                               encoding
+  labs(title = "Distribution of Sentiments Across the 10 Clusters",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+
+print(barplot_kmeans10)
+
+##### Silhouette Score (Internal validation) ########
+#####################################################
+# Calculate Silhouette score for K=5
+silhouette_score_5 <- silhouette(kmeans_result_5$cluster, dist(dtm_tfidf_m))
+
+# View average silhouette width (for K=5)
+avg_silhouette_5 <- mean(silhouette_score_5[, 3])
+print(paste("Average silhouette score (K=5): ", round(avg_silhouette_5, 2)))
+
+# Calculate Silhouette score for K=10
+silhouette_score_10 <- silhouette(kmeans_result_10$cluster, dist(dtm_tfidf_m))
+
+# View average silhouette width (for K=10)
+avg_silhouette_10 <- mean(silhouette_score_10[, 3])
+print(paste("Average silhouette score (K=10): ", round(avg_silhouette_10, 2)))
+
+
+#### Davies-Bouldin (DB) index (Internal validation) #####
+#########################################
+# Calculate Davies-Bouldin Index for K=5
+db_index_result_5 <- index.DB(dtm_tfidf_m, kmeans_result_5$cluster)
+
+# View DB index result
+db_index_5 <- db_index_result_5$DB
+print(paste("Davies-Bouldin Index (K=5): ", round(db_index_5, 2)))
+
+# Calculate Davies-Bouldin Index for K=10
+db_index_result_10 <- index.DB(dtm_tfidf_m, kmeans_result_10$cluster)
+
+# View DB index result
+db_index_10 <- db_index_result_10$DB
+print(paste("Davies-Bouldin Index (K=10): ", round(db_index_10, 2)))
+
+```
+
+
+Next, we apply the K-Medians algorithm, which initially assigns data points to K clusters randomly. It then calculates the medians for each cluster instead of centroids. Each data point is assigned to the cluster with the closest median, measured using Manhattan distance.
+
+```{r}
+#| label: K-Median Method
+
+set.seed(40) # for reproducibility
+# Define clusters
+k1 <- 5
+k2 <- 10
+ 
+# K-Medians clustering with 5 and 10 clusters
+k_median_result1 <- pam(dtm_matrix, k1, metric = "manhattan")
+k_median_result2 <- pam(dtm_matrix, k2, metric = "manhattan")
+ 
+# Add cluster assignments to movie_review data
+movie_review$cluster1 <- k_median_result1$clustering
+movie_review$cluster2 <- k_median_result2$clustering
+ 
+# Plot distribution of sentiments for 5 clusters
+ggplot(movie_review, aes(x = factor(cluster1), fill = factor(sentiment))) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), 
+                    labels = c("Negative", "Positive")) +
+  labs(title = "Distribution of Sentiments Across Clusters (k = 5)",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+ 
+# Plot distribution of sentiments for 10 clusters
+ggplot(movie_review, aes(x = factor(cluster2), fill = factor(sentiment))) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), 
+                    labels = c("Negative", "Positive")) +
+  labs(title = "Distribution of Sentiments Across Clusters (k = 10)",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+ 
+ 
+# Calculate distance matrix based on the DTM matrix
+dist_matrix <- dist(dtm_matrix, method = "manhattan")  # Use "manhattan" if it matches your clustering metric
+ 
+# Silhouette analysis for k = 5 clusters
+silhouette_result_k1 <- silhouette(k_median_result1$clustering, dist_matrix)
+avg_silhouette_k1 <- mean(silhouette_result_k1[, 3])  # Calculate the average silhouette width
+print(paste("Average Silhouette Score for 5 clusters:", round(avg_silhouette_k1, 4)))
+ 
+# Silhouette analysis for k = 10 clusters
+silhouette_result_k2 <- silhouette(k_median_result2$clustering, dist_matrix)
+avg_silhouette_k2 <- mean(silhouette_result_k2[, 3])  # Calculate the average silhouette width
+print(paste("Average Silhouette Score for 10 clusters:", round(avg_silhouette_k2, 4)))
+
+```
+
+Gaussian Mixture Models (GMM) are probabilistic models that assume data is generated from a mixture of Gaussian distributions. This allows GMM to model complex structures in high-dimensional data, making it more flexible than traditional clustering methods, especially when clusters follow a normal distribution. 
+To visualize the clustering results, UMAP is applied for dimensionality reduction before fitting the GMM. UMAP is effective in keeping the local structure of the data while also showing global patterns. This makes it a suitable choice for high-dimensional datasets like the document-term matrix (DTM). Unlike t-SNE, which can distort global relationships, UMAP maintains more meaningful connections among data points and can handle larger datasets efficiently.
+
+```{r}
+#| label: GMM Method
+
+set.seed(40)
+# Apply UMAP
+umap_result <- umap(dtm_matrix)
+
+# GMM with 5 clusters on UMAP
+gmm_5_umap <- Mclust(umap_result$layout, G = 5)
+summary(gmm_5_umap)
+
+# GMM with 10 clusters on UMAP 
+gmm_10_umap <- Mclust(umap_result$layout, G = 10)
+summary(gmm_10_umap)
+
+# Convert UMAP results to a data frame
+umap_data <- as.data.frame(umap_result$layout)
+
+# Add cluster assignments
+umap_data$cluster_5 <- gmm_5_umap$classification
+umap_data$cluster_10 <- gmm_10_umap$classification
+
+# Plot for GMM with 5 clusters
+ggplot(umap_data, aes(x = V1, y = V2, color = as.factor(cluster_5))) +
+  geom_point(alpha = 0.6) +
+  labs(title = "GMM Clustering (5 Clusters) - UMAP",
+       x = "UMAP Dimension 1",
+       y = "UMAP Dimension 2",
+       color = "Cluster") +
+  theme_minimal()
+
+# Plot for GMM with 10 clusters
+ggplot(umap_data, aes(x = V1, y = V2, color = as.factor(cluster_10))) +
+  geom_point(alpha = 0.6) +
+  labs(title = "GMM Clustering (10 Clusters) - UMAP",
+       x = "UMAP Dimension 1",
+       y = "UMAP Dimension 2",
+       color = "Cluster") +
+  theme_minimal()
+
+# Silhouette
+# Calculate silhouette scores
+silhouette_5_umap <- silhouette(gmm_5_umap$classification, dist(umap_result$layout))
+silhouette_10_umap <- silhouette(gmm_10_umap$classification, dist(umap_result$layout))
+
+# Assign the average silhouette scores to variables
+avg_silhouette_5_umap <- mean(silhouette_5_umap[, 3])
+avg_silhouette_10_umap <- mean(silhouette_10_umap[, 3])
+
+# Print the silhouette scores
+cat("Average Silhouette Score for 5 Clusters (UMAP):", avg_silhouette_5_umap, "\n")
+cat("Average Silhouette Score for 10 Clusters (UMAP):", avg_silhouette_10_umap, "\n")
+
+
+# Sentiment labels
+sentiment_summary_5 <- as.data.frame(table(umap_data$cluster_5, movie_review$sentiment))
+colnames(sentiment_summary_5) <- c("Cluster", "Sentiment", "Count")
+
+sentiment_summary_10 <- as.data.frame(table(umap_data$cluster_10, movie_review$sentiment))
+colnames(sentiment_summary_10) <- c("Cluster", "Sentiment", "Count")
+
+print("Sentiment Distribution for 5 Clusters:")
+print(sentiment_summary_5)
+
+print("Sentiment Distribution for 10 Clusters:")
+print(sentiment_summary_10)
+
+ggplot(sentiment_summary_5, aes(x = factor(Cluster), y = Count, fill = factor(Sentiment))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), labels = c("Negative", "Positive")) +
+  labs(title = "Distribution of Sentiments Across Clusters (GMM with UMAP, k = 5)",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+
+ggplot(sentiment_summary_10, aes(x = factor(Cluster), y = Count, fill = factor(Sentiment))) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), labels = c("Negative", "Positive")) +
+  labs(title = "Distribution of Sentiments Across Clusters (GMM with UMAP, k = 10)",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+
+# DB Index
+db_index_5_umap <- index.DB(umap_result$layout, gmm_5_umap$classification)
+db_index_score_5_umap <- db_index_5_umap$DB
+print(db_index_score_5_umap)
+
+db_index_10_umap <- index.DB(umap_result$layout, gmm_10_umap$classification)
+db_index_score_10_umap <- db_index_10_umap$DB
+print(db_index_score_10_umap)
+
+```
+
+Hierarchical Clustering was also applied to our dataset to analyze the natural groupings within the movie reviews. This method calculates the similarity between data points using the Manhattan distance, then organizes them into a hierarchical structure. Initially, each data point is treated as its own cluster. The algorithm iteratively merges the closest clusters based on Manhattan distance, creating a tree-like structure known as a dendrogram. To define specific clusters, we cut the dendrogram at chosen levels, resulting in distinct groups of reviews. This hierarchical approach allows us to capture the nested structure of the data and analyze clusters at multiple levels of granularity.
+
+```{r}
+
+#| label: Hierarchical Clustering
+
+
+# Step 1: Calculate Distance Matrix
+dist_matrix <- dist(dtm_matrix, method = "manhattan") # We could also use "eukleidian"
+
+# Step 2: Perform Hierarchical Clustering
+hclust_result <- hclust(dist_matrix, method = "ward.D2") # Using Ward's method for compact clusters
+
+# Set larger plot dimensions (optional, useful for R Markdown)
+options(repr.plot.width = 10, repr.plot.height = 6)
+
+# Plot the dendrogram with better formatting
+plot(hclust_result, main = "Dendrogram of Movie Review Clusters", 
+     xlab = "Reviews", ylab = "Height", cex = 0.6, # Adjust text size
+     sub = "", hang = -1) # "hang = -1" makes the labels align at the bottom
+
+# Add rectangles to indicate clusters
+rect.hclust(hclust_result, k = 5, border = "red")    # 5 clusters in red
+rect.hclust(hclust_result, k = 10, border = "blue")  # 10 clusters in blue
+
+
+
+# Step 3: Cut the dendrogram to create 5 and 10 clusters
+movie_review$cluster1 <- cutree(hclust_result, k = 5)
+movie_review$cluster2 <- cutree(hclust_result, k = 10)
+
+# Step 4: Plot Distribution of Sentiments for 5 clusters
+ggplot(movie_review, aes(x = factor(cluster1), fill = factor(sentiment))) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), 
+                    labels = c("Negative", "Positive")) +
+  labs(title = "Distribution of Sentiments Across Clusters (k = 5)",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+
+# Step 5: Plot Distribution of Sentiments for 10 clusters
+ggplot(movie_review, aes(x = factor(cluster2), fill = factor(sentiment))) +
+  geom_bar(position = "dodge") +
+  scale_fill_manual(values = c("red", "green"), 
+                    labels = c("Negative", "Positive")) +
+  labs(title = "Distribution of Sentiments Across Clusters (k = 10)",
+       x = "Cluster", 
+       y = "Number of Reviews", 
+       fill = "Sentiment") +
+  theme_minimal()
+
+# Step 6: Calculate Silhouette Coefficient
+calculate_silhouette <- function(dtm_matrix, clustering_result) {
+  silhouette_result <- silhouette(clustering_result, dist_matrix)
+  mean(silhouette_result[, 3])  # Average silhouette width
+}
+
+# Calculate and print Silhouette Coefficients for 5 and 10 clusters
+Hsilhouette_k1 <- calculate_silhouette(dtm_matrix, movie_review$cluster1)
+Hsilhouette_k2 <- calculate_silhouette(dtm_matrix, movie_review$cluster2)
+
+# Print Silhouette Coefficients
+print(paste("Silhouette Coefficient for 5 clusters:", round(Hsilhouette_k1, 4)))
+print(paste("Silhouette Coefficient for 10 clusters:", round(Hsilhouette_k2, 4)))
+
+```
+
+For clustering, Latent Dirichlet Allocation (LDA) was employed to perform topic modeling, with models created for both 5 and 10 topics. LDA is a probabilistic model that assigns each document a mixture of topics, where each topic is defined by a distribution over words. By experimenting with different topic counts (5 and 10), the goal was to find an optimal configuration that best represented the underlying themes in the data.
+
+```{r}
+
+#| label: LDA Topic Modeling
+
+# Step 1: Convert weighted DTM to a matrix for LDA
+dtm_for_lda <- as.matrix(dtm)
+
+# Step 2: Fit LDA with 5 topics
+lda_5 <- LDA(dtm_for_lda, k = 5, control = list(seed = 123))
+
+# Step 3: Fit LDA with 10 topics
+lda_10 <- LDA(dtm_for_lda, k = 10, control = list(seed = 123))
+
+# Step 4: Analyze and Interpret the Results
+
+# Step 5: Get top terms for each topic (for 5 topics)
+terms_lda_5 <- terms(lda_5, 10)
+print(terms_lda_5)
+
+# Step 6: Get top terms for each topic (for 10 topics)
+terms_lda_10 <- terms(lda_10, 10)
+print(terms_lda_10)
+
+# Step 7: Assign each document to the most likely topic (for 5 topics)
+topics_lda_5 <- topics(lda_5, 1)
+table(topics_lda_5)
+
+# Step 8: Assign each document to the most likely topic (for 10 topics)
+topics_lda_10 <- topics(lda_10, 1)
+table(topics_lda_10)
+
+
+# Step 9: Assuming you have a sentiment column in movie_review
+table(topics_lda_5, movie_review$sentiment)
+# Create a data frame with the topics
+lda_5_df <- data.frame(document = 1:length(topics_lda_5), topic = topics_lda_5)
+
+# Step 10: Plot the number of documents per topic (for 5 clusters)
+ggplot(lda_5_df, aes(x = factor(topic))) +
+  geom_bar(fill = "skyblue") +
+  labs(title = "Distribution of Documents per Topic (5 Clusters)",
+       x = "Topic", y = "Number of Documents") +
+  theme_minimal()
+
+# Repeat for 10 clusters
+topics_lda_10 <- topics(lda_10, 1)
+lda_10_df <- data.frame(document = 1:length(topics_lda_10), topic = topics_lda_10)
+
+ggplot(lda_10_df, aes(x = factor(topic))) +
+  geom_bar(fill = "lightcoral") +
+  labs(title = "Distribution of Documents per Topic (10 Clusters)",
+       x = "Topic", y = "Number of Documents") +
+  theme_minimal()
+
+#internal validation
+
+#silhouette 
+
+
+# Convert topic assignments (clusters) to a factor for silhouette analysis
+silhouette_lda_5 <- silhouette(topics_lda_5, dist(dtm_for_lda))
+
+avg_silhouette_lda5 <- mean(silhouette_lda_5[, 3])  # Calculate the average silhouette width
+print(paste("Average Silhouette Score for 5 clusters:", round(avg_silhouette_lda5, 4)))
+
+# Repeat for 10 clusters
+silhouette_lda_10 <- silhouette(topics_lda_10, dist(dtm_for_lda))
+
+avg_silhouette_lda10 <- mean(silhouette_lda_10[, 3])  # Calculate the average silhouette width
+print(paste("Average Silhouette Score for 10 clusters:", round(avg_silhouette_lda10, 4)))
+
+
+#DaviesBouldin
+
+
+# Calculate DB-index for LDA with 5 clusters
+db_index_5 <- index.DB(dtm_for_lda, topics_lda_5)
+db_index_5
+table(topics_lda_10, movie_review$sentiment)
+
+# Calculate DB-index for LDA with 10 clusters
+db_index_10 <- index.DB(dtm_for_lda, topics_lda_10)
+db_index_10
+
+# Access the DB index score directly
+db_index_score_5 <- db_index_5$DB
+print(db_index_score_5)
+
+db_index_score_10 <- db_index_10$DB
+print(db_index_score_10)
+
+```
+
+
+
+# Evaluation & model comparison
+
+We use the Silhouette score to compare clustering models because it provides a clear metric to evaluate how well the data points are clustered. The score measures the cohesion within clusters and the separation between different clusters. A higher Silhouette score indicates that data points are well matched to their own clusters and are distinct from other clusters. This makes it an effective way to assess the quality of clustering, especially when different algorithms, such as K-means, K-median, or GMM, are used.
+
+By using the Silhouette score, we can quantitatively determine which model best fits the data. It helps to highlight models where the clusters are more distinct and separated, thus leading to more meaningful patterns. This metric is valuable when trying to choose the optimal clustering approach, as it provides a simple yet effective way to compare models based on their ability to create well-defined clusters.
+
+
+```{r}
+#| label: table example
+
+
+data.frame(
+  model       = c("K-mean", "K-median", "GMM", "Hierarchical Clustering", "LDA Topic Modeling"),
+  silhouette = c(avg_silhouette_5,avg_silhouette_k1,avg_silhouette_5_umap,Hsilhouette_k1, avg_silhouette_lda5),
+  notes = c("Silhouette Coefficient for 5 clusters")
+ 
+)
+
+
+
+data.frame(
+  model       = c("K-mean", "K-median", "GMM", "Hierarchical Clustering","LDA Topic Modeling"),
+  silhouette = c(avg_silhouette_10,avg_silhouette_k2, avg_silhouette_10_umap, Hsilhouette_k2, avg_silhouette_lda10 ),
+  notes = c("Silhouette Coefficient for 10 clusters")
+ 
+)
+```
+
+
+
